@@ -97,10 +97,8 @@ Neutral and Authority runs share:
 
 ## Results Visualization
 
-### Polarization trajectory
-![Polarization trajectory](figures/polarization_trajectory.png)
+The figure below summarizes the mechanism and outcomes (including the polarization trajectory as Panel D).
 
-### Mechanism diagnostics
 ![Mechanism diagnostics](figures/mechanism_diagnostics.png)
 
 ---
@@ -124,7 +122,7 @@ A natural next step is multi-seed replication and uncertainty quantification (e.
 
 This README was **automatically generated** from the latest simulation run.
 
-**Timestamp:** 2025-12-26 14:49 UTC
+**Timestamp:** 2025-12-26 15:26 UTC
 
 ---
 

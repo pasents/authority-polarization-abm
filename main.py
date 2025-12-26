@@ -64,26 +64,13 @@ def save_figures(
 ):
     os.makedirs("figures", exist_ok=True)
 
-    # -----------------------------
-    # Figure 1: Polarization trajectory (standalone)
-    # -----------------------------
-    plt.figure(figsize=(10, 5))
-    plt.plot(pol_neu, label="Neutral", linewidth=2)
-    plt.plot(pol_auth, label="Authority", linewidth=2)
-    plt.xlabel("Measurement step")
-    plt.ylabel("Polarization (variance)")
-    plt.title("Opinion Variance Over Time (Route A: Thesis-Trained Sharing)")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig("figures/polarization_trajectory.png", dpi=300)
-    plt.close()
-
-    # -----------------------------
-    # Figure 2: Mechanism diagnostics (multi-panel)
-    # -----------------------------
+    # ---------------------------------------------------------
+    # Single figure only: 2x2 mechanism diagnostics
+    # Panel D contains polarization trajectory (no standalone plot)
+    # ---------------------------------------------------------
     plt.figure(figsize=(12, 8))
 
-    # Panel A: share propensity distributions (always available)
+    # Panel A: share propensity distributions
     ax1 = plt.subplot(2, 2, 1)
     ax1.hist(shares_neu, bins=30, alpha=0.7, label="Neutral")
     ax1.hist(shares_auth, bins=30, alpha=0.7, label="Authority")
@@ -144,18 +131,14 @@ def save_figures(
             va="center",
         )
 
-    # Panel D: avoid duplicating Figure 1
+    # Panel D: Polarization trajectory (variance)
     ax4 = plt.subplot(2, 2, 4)
-    ax4.axis("off")
-    ax4.text(
-        0.05,
-        0.55,
-        "Polarization trajectory is saved as:\n\n"
-        "figures/polarization_trajectory.png\n\n"
-        "See Figure 1 for the standalone plot.",
-        fontsize=12,
-        va="center",
-    )
+    ax4.plot(pol_neu, label="Neutral")
+    ax4.plot(pol_auth, label="Authority")
+    ax4.set_title("Polarization Trajectory (Variance)")
+    ax4.set_xlabel("measurement index")
+    ax4.set_ylabel("variance")
+    ax4.legend()
 
     plt.tight_layout()
     plt.savefig("figures/mechanism_diagnostics.png", dpi=300)
@@ -222,7 +205,7 @@ def main():
     )
     G_auth, pol_auth, _, ops_auth, diag_auth = unpack_run(res_auth)
 
-    # Save figures for README
+    # Save the single combined figure
     save_figures(
         pol_neu,
         pol_auth,
@@ -254,14 +237,13 @@ def main():
         pol_auth=pol_auth,
         base_params=base_params,
         artifacts=ReadmeArtifacts(
-            fig_traj="figures/polarization_trajectory.png",
             fig_mech="figures/mechanism_diagnostics.png",
             animation="figures/authority_animation.gif",
         ),
         outpath="README.md",
     )
 
-    print("[INFO] Done. Figures saved in ./figures, GIF saved, and README.md updated.")
+    print("[INFO] Done. Figure saved in ./figures, GIF saved, and README.md updated.")
 
 
 if __name__ == "__main__":

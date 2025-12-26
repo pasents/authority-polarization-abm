@@ -14,7 +14,6 @@ import numpy as np
 
 @dataclass(frozen=True)
 class ReadmeArtifacts:
-    fig_traj: str = "figures/polarization_trajectory.png"
     fig_mech: str = "figures/mechanism_diagnostics.png"
     animation: str = "figures/authority_animation.gif"
 
@@ -75,10 +74,8 @@ def write_professional_readme(
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    # Keep the parameters block readable + stable
     params_json = json.dumps(base_params, indent=2)
 
-    # Note: base_params["use_nn"] refers to *influence NN* (Route B), not the thesis share model.
     use_nn_flag = bool(base_params.get("use_nn", False))
     influence_line = "ON" if use_nn_flag else "OFF"
 
@@ -143,9 +140,7 @@ def write_professional_readme(
         f"**End-of-simulation difference (Authority − Neutral): {delta_end:+.4f}**\n\n"
         "---\n\n"
         "## Results Visualization\n\n"
-        "### Polarization trajectory\n"
-        f"![Polarization trajectory]({artifacts.fig_traj})\n\n"
-        "### Mechanism diagnostics\n"
+        "The figure below summarizes the mechanism and outcomes (including the polarization trajectory as Panel D).\n\n"
         f"![Mechanism diagnostics]({artifacts.fig_mech})\n\n"
         "---\n\n"
         "## Network Dynamics\n\n"
