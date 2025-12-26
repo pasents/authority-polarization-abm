@@ -1,0 +1,14 @@
+# Empirical parameters extracted from Christos' thesis dataset
+
+# Willingness to share (0–1 scale)
+BASE_SHARE_PROPENSITY_NEUTRAL = 0.22
+BASE_SHARE_PROPENSITY_AUTHORITY = 0.34
+
+# Epistemic Vigilance (0–1 scale)
+BASE_VIGILANCE_NEUTRAL = 0.45
+BASE_VIGILANCE_AUTHORITY = 0.35
+
+# Moderators (optional)
+FAMILIARITY_SHARING_REDUCTION = 0.10
+MEDIA_LITERACY_VIGILANCE_BOOST = 0.10
+MEDIA_LITERACY_SHARING_REDUCTION = 0.05
