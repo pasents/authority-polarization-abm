@@ -1,6 +1,15 @@
 # train_nn_real.py
+# Robust, defensible training script for thesis_clean.csv
+# - Normalizes strings (strip)
+# - Handles mixed numeric/text columns safely
+# - Applies explicit quality filters (configurable; defaults are conservative)
+# - Uses a real train/validation split
+# - Saves model + normalization stats
+
+from __future__ import annotations
 
 from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -10,10 +19,9 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from opinion_dynamics.nn_model import OpinionUpdateNet, NNConfig
 
-
 # ========= CONFIG =========
 
-DATA_PATH = Path("data/thesis_clean.csv")   # CSV exported from Stata
+DATA_PATH = Path("data/thesis_clean.csv")
 MODEL_SAVE_PATH = Path("opinion_dynamics/trained_nn_real.pt")
 
 BATCH_SIZE = 64
@@ -21,6 +29,13 @@ EPOCHS = 50
 LR = 1e-3
 SEED = 42
 
+# Holdout split
+VAL_FRAC = 0.20
+
+# Quality filters (set to None to disable a filter)
+RECAPTCHA_MIN = 0.50        # typical: 0.5; set None to disable
+ATTENDANCECHECK_MIN = 3     # your CSV seems 0–3; set None to disable
+REQUIRE_FINISHED_TRUE = True
 
 # ========= COLUMN NAMES (match your CSV) =========
 
@@ -29,18 +44,11 @@ COL_VIG = "vigilance_score"
 COL_MEDIA_LIT = "media_literacy"
 COL_TRUST_AUTH = "trust_authority"
 COL_FAM_ACAD = "fam_academic_score"
-COL_CONTEXT_AUTH = "context_authority"      # "Authoritative setting" / "Neutral setting"
+COL_CONTEXT_AUTH = "context_authority"  # "Authoritative setting" / "Neutral setting"
 
+# ========= MAPPINGS =========
 
-# ========= UTILITIES =========
-
-def set_global_seed(seed: int = SEED):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-
-# Likert mappings
-SHARE_MAP = {
+SHARE_MAP: Dict[str, float] = {
     "Extremely unlikely": 0.0,
     "Unlikely": 0.25,
     "Neutral": 0.5,
@@ -48,7 +56,7 @@ SHARE_MAP = {
     "Extremely likely": 1.0,
 }
 
-VIG_MAP = {
+VIG_MAP: Dict[str, float] = {
     "Not at all vigilant": 1.0,
     "Slightly vigilant": 2.0,
     "Moderately vigilant": 3.0,
@@ -56,7 +64,7 @@ VIG_MAP = {
     "Extremely vigilant": 5.0,
 }
 
-LIKERT5_AGREE = {
+LIKERT5_AGREE: Dict[str, float] = {
     "Strongly disagree": 1.0,
     "Disagree": 2.0,
     "Neutral": 3.0,
@@ -64,7 +72,7 @@ LIKERT5_AGREE = {
     "Strongly agree": 5.0,
 }
 
-FAM_MAP = {
+FAM_MAP: Dict[str, float] = {
     "Not at all familiar": 1.0,
     "Slightly familiar": 2.0,
     "Moderately familiar": 3.0,
@@ -73,16 +81,45 @@ FAM_MAP = {
 }
 
 
-def to_float_mixed(series: pd.Series, label_map: dict | None = None) -> pd.Series:
-    """Convert a column that is a mix of numbers and text labels into floats."""
+# ========= UTILITIES =========
+
+def set_global_seed(seed: int = SEED) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    # Determinism (CPU-safe; CUDA flags harmless if not used)
+    try:
+        torch.use_deterministic_algorithms(True)
+    except Exception:
+        pass
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def _norm_str(x) -> str:
+    return str(x).strip()
+
+
+def _norm_bool(x) -> bool:
+    return _norm_str(x).upper() in {"TRUE", "1", "YES", "Y", "T"}
+
+
+def to_float_mixed(series: pd.Series, label_map: Optional[Dict[str, float]] = None) -> pd.Series:
+    """
+    Convert a column that may contain:
+      - floats/ints
+      - numeric strings ("3", "4.2")
+      - label strings (mapped via label_map)
+    into floats. Unknowns => NaN.
+    """
     def conv(x):
         if pd.isna(x):
             return np.nan
         if isinstance(x, (int, float, np.floating)):
             return float(x)
-        s = str(x)
-        if label_map and s in label_map:
+        s = _norm_str(x)
+        if label_map is not None and s in label_map:
             return float(label_map[s])
+        # numeric string?
         try:
             return float(s)
         except ValueError:
@@ -91,186 +128,226 @@ def to_float_mixed(series: pd.Series, label_map: dict | None = None) -> pd.Serie
     return series.apply(conv)
 
 
-def load_and_prepare_data() -> tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray]:
-    """
-    Load thesis_clean.csv, build numeric features and target.
+def assert_no_unmapped(original: pd.Series, numeric: pd.Series, colname: str) -> None:
+    """Fail fast if mapping/coercion produced NaNs for non-missing original values."""
+    bad = numeric.isna() & (~original.isna())
+    if bad.any():
+        missing_vals = pd.Series(original[bad].astype(str).map(_norm_str).unique()).sort_values().to_list()
+        raise ValueError(
+            f"[ERROR] Unmapped/unparseable values found in {colname}: {missing_vals}. "
+            f"Fix your label map or normalize the source values."
+        )
 
+
+def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray]:
+    """
     X = [is_authority_flag, vigilance_num, media_num, trust_num, fam_num]
-    y = share_num in [0, 1]
+    y = share_num in [0,1]
+    Returns:
+      X_tensor, y_tensor, X_mean, X_std  (mean/std over columns 1: i.e., traits only)
     """
     if not DATA_PATH.is_file():
-        raise FileNotFoundError(
-            f"Could not find data file at {DATA_PATH}. "
-            f"Make sure thesis_clean.csv is in data/."
-        )
+        raise FileNotFoundError(f"Could not find {DATA_PATH}. Place thesis_clean.csv in data/.")
 
-    # ==== 1. LOAD CSV ====
     df = pd.read_csv(DATA_PATH)
-    print("Loaded CSV shape:", df.shape)
+    print(f"[INFO] Loaded CSV shape: {df.shape}")
 
-    # ==== 2. BUILD NUMERIC TARGET ====
-    if COL_SHARE not in df.columns:
-        raise KeyError(f"{COL_SHARE!r} not found in CSV columns: {list(df.columns)}")
+    # ---- Basic column presence checks ----
+    required = [COL_SHARE, COL_VIG, COL_MEDIA_LIT, COL_TRUST_AUTH, COL_FAM_ACAD, COL_CONTEXT_AUTH]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise KeyError(f"[ERROR] Missing required columns: {missing}")
 
-    df["share_num"] = df[COL_SHARE].map(SHARE_MAP)
+    # ---- Quality filters (configurable) ----
+    n0 = len(df)
 
-    if df["share_num"].isna().any():
-        missing_vals = df[COL_SHARE][df["share_num"].isna()].unique()
-        raise ValueError(
-            f"Some share_score values were not mapped: {missing_vals}. "
-            f"Update SHARE_MAP if needed."
-        )
+    if REQUIRE_FINISHED_TRUE and "finished" in df.columns:
+        df = df[df["finished"].apply(_norm_bool)]
+        print(f"[FILTER] finished==TRUE: {n0} -> {len(df)}")
+        n0 = len(df)
 
-    # ==== 3. BUILD NUMERIC FEATURES ====
+    if ATTENDANCECHECK_MIN is not None and "attendancecheck" in df.columns:
+        df["attendancecheck_num"] = pd.to_numeric(df["attendancecheck"], errors="coerce")
+        df = df[df["attendancecheck_num"] >= float(ATTENDANCECHECK_MIN)]
+        print(f"[FILTER] attendancecheck>={ATTENDANCECHECK_MIN}: {n0} -> {len(df)}")
+        n0 = len(df)
+
+    if RECAPTCHA_MIN is not None and "q_recaptchascore" in df.columns:
+        df["recaptcha_num"] = pd.to_numeric(df["q_recaptchascore"], errors="coerce")
+        df = df[df["recaptcha_num"] >= float(RECAPTCHA_MIN)]
+        print(f"[FILTER] q_recaptchascore>={RECAPTCHA_MIN}: {n0} -> {len(df)}")
+        n0 = len(df)
+
+    if len(df) == 0:
+        raise ValueError("[ERROR] No rows left after quality filters. Relax thresholds or inspect data.")
+
+    # ---- Map / coerce target and features ----
+    # Target
+    df["share_num"] = to_float_mixed(df[COL_SHARE], SHARE_MAP)
+    assert_no_unmapped(df[COL_SHARE], df["share_num"], COL_SHARE)
 
     # Vigilance
-    if COL_VIG not in df.columns:
-        raise KeyError(f"{COL_VIG!r} not found in CSV.")
-    df["vigilance_num"] = df[COL_VIG].map(VIG_MAP)
-    if df["vigilance_num"].isna().any():
-        missing_vals = df[COL_VIG][df["vigilance_num"].isna()].unique()
-        raise ValueError(
-            f"Some vigilance_score values were not mapped: {missing_vals}. "
-            f"Update VIG_MAP if needed."
-        )
+    df["vigilance_num"] = to_float_mixed(df[COL_VIG], VIG_MAP)
+    assert_no_unmapped(df[COL_VIG], df["vigilance_num"], COL_VIG)
 
-    # Trust & media literacy
-    if COL_TRUST_AUTH not in df.columns or COL_MEDIA_LIT not in df.columns:
-        raise KeyError("trust_authority or media_literacy missing from CSV.")
+    # Trust and media literacy (allow mixed numeric + Agree labels)
     df["trust_num"] = to_float_mixed(df[COL_TRUST_AUTH], LIKERT5_AGREE)
     df["media_num"] = to_float_mixed(df[COL_MEDIA_LIT], LIKERT5_AGREE)
+    assert_no_unmapped(df[COL_TRUST_AUTH], df["trust_num"], COL_TRUST_AUTH)
+    assert_no_unmapped(df[COL_MEDIA_LIT], df["media_num"], COL_MEDIA_LIT)
 
     # Familiarity
-    if COL_FAM_ACAD not in df.columns:
-        raise KeyError(f"{COL_FAM_ACAD!r} not found in CSV.")
-    df["fam_num"] = df[COL_FAM_ACAD].map(FAM_MAP)
+    df["fam_num"] = to_float_mixed(df[COL_FAM_ACAD], FAM_MAP)
+    assert_no_unmapped(df[COL_FAM_ACAD], df["fam_num"], COL_FAM_ACAD)
 
-    if df[["trust_num", "media_num", "fam_num"]].isna().any().any():
-        raise ValueError(
-            "NaNs found in trust_num/media_num/fam_num after mapping. "
-            "Check label maps."
-        )
+    # Authority flag
+    df["context_norm"] = df[COL_CONTEXT_AUTH].astype(str).map(_norm_str)
+    allowed_context = {"Authoritative setting", "Neutral setting"}
+    bad_ctx = ~df["context_norm"].isin(allowed_context)
+    if bad_ctx.any():
+        bad_vals = sorted(df.loc[bad_ctx, "context_norm"].unique().tolist())
+        raise ValueError(f"[ERROR] Unexpected context_authority values: {bad_vals}")
 
-    # Authority flag from context_authority
-    if COL_CONTEXT_AUTH not in df.columns:
-        raise KeyError(f"{COL_CONTEXT_AUTH!r} not found in CSV.")
-    df["is_authority_flag"] = (
-        df[COL_CONTEXT_AUTH] == "Authoritative setting"
-    ).astype(float)
+    df["is_authority_flag"] = (df["context_norm"] == "Authoritative setting").astype(np.float32)
 
-    # ==== 4. BUILD FINAL MATRICES ====
-    X_cols = [
-        "is_authority_flag",
-        "vigilance_num",
-        "media_num",
-        "trust_num",
-        "fam_num",
-    ]
+    # ---- Build final matrices ----
+    X_cols = ["is_authority_flag", "vigilance_num", "media_num", "trust_num", "fam_num"]
+    y_col = "share_num"
 
-    df_clean = df[X_cols + ["share_num"]].copy()
+    df_model = df[X_cols + [y_col]].copy()
 
-    X = df_clean[X_cols].to_numpy(dtype=np.float32)
-    y = df_clean[["share_num"]].to_numpy(dtype=np.float32)
+    # Drop any remaining NaNs (should be none unless you intentionally allow missing)
+    n_before = len(df_model)
+    df_model = df_model.dropna()
+    print(f"[INFO] Rows after dropna: {n_before} -> {len(df_model)}")
 
-    print("Rows before NaN mask:", X.shape[0])
+    if len(df_model) < 10:
+        raise ValueError("[ERROR] Too few rows after cleaning. Your filters/mappings are too strict or data is messy.")
 
-    mask = (~np.isnan(X).any(axis=1)) & (~np.isnan(y).any(axis=1))
-    X = X[mask]
-    y = y[mask]
+    X = df_model[X_cols].to_numpy(dtype=np.float32)
+    y = df_model[[y_col]].to_numpy(dtype=np.float32)
 
-    print("Rows after NaN mask:", X.shape[0])
-
-    if X.shape[0] == 0:
-        raise ValueError("No rows left after cleaning; check mappings and CSV values.")
-
-    # ==== 5. STANDARDIZE FEATURES (EXCEPT BINARY FLAG) ====
+    # ---- Standardize traits only (cols 1:) ----
     X_mean = X[:, 1:].mean(axis=0, keepdims=True).astype(np.float32)
     X_std = X[:, 1:].std(axis=0, keepdims=True).astype(np.float32)
     X[:, 1:] = (X[:, 1:] - X_mean) / (X_std + 1e-8)
 
-    X_tensor = torch.from_numpy(X)
-    y_tensor = torch.from_numpy(y)
-
-    return X_tensor, y_tensor, X_mean, X_std
+    return torch.from_numpy(X), torch.from_numpy(y), X_mean, X_std
 
 
-# ========= TRAINING =========
-
-def train():
-    set_global_seed(SEED)
-
-    print(f"Loading data from {DATA_PATH}...")
-    X, y, X_mean, X_std = load_and_prepare_data()
-    print(f"Data shape: X={X.shape}, y={y.shape}")
-
-    dataset = TensorDataset(X, y)
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-    cfg = NNConfig(
-        input_dim=5,   # is_authority + 4 traits
-        hidden_dim=32,
-        device="cpu",
-        model_path=None,
-    )
-    device = torch.device(cfg.device)
-
-    model = OpinionUpdateNet(
-        input_dim=cfg.input_dim,
-        hidden_dim=cfg.hidden_dim,
-    ).to(device)
-
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-
-    print("Starting training on real participant data...")
-    for epoch in range(1, EPOCHS + 1):
-        model.train()
-        epoch_loss = 0.0
-
-        for batch_X, batch_y in loader:
-            batch_X = batch_X.to(device)
-            batch_y = batch_y.to(device)
-
-            optimizer.zero_grad()
-            pred = model(batch_X)          # in (0, 1)
-            loss = criterion(pred, batch_y)
-            loss.backward()
-            optimizer.step()
-
-            epoch_loss += loss.item() * batch_X.size(0)
-
-        epoch_loss /= len(dataset)
-        print(f"Epoch {epoch:02d}/{EPOCHS} - MSE loss: {epoch_loss:.6f}")
-
-    # ========= EVALUATION METRICS ON FULL DATA =========
-    model.eval()
-    with torch.no_grad():
-        preds = model(X.to(device)).cpu().numpy().flatten()
-        y_true = y.numpy().flatten()
+def compute_metrics(y_true: np.ndarray, preds: np.ndarray) -> Dict[str, float]:
+    y_true = y_true.flatten()
+    preds = preds.flatten()
 
     mse = float(((preds - y_true) ** 2).mean())
     rmse = float(np.sqrt(mse))
     mae = float(np.abs(preds - y_true).mean())
-    # R^2
+
     ss_res = float(((y_true - preds) ** 2).sum())
     ss_tot = float(((y_true - y_true.mean()) ** 2).sum())
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 
-    print("\n=== Train metrics on full dataset ===")
-    print(f"MSE  : {mse:.4f}")
-    print(f"RMSE : {rmse:.4f}")
-    print(f"MAE  : {mae:.4f}")
-    print(f"R^2  : {r2:.4f}")
+    return {"MSE": mse, "RMSE": rmse, "MAE": mae, "R2": r2}
 
-    # ===== SAVE MODEL + NORMALIZATION =====
+
+# ========= TRAINING =========
+
+def train() -> None:
+    set_global_seed(SEED)
+
+    print(f"[INFO] Loading data from {DATA_PATH}...")
+    X, y, X_mean, X_std = load_and_prepare_data()
+    print(f"[INFO] Data ready: X={tuple(X.shape)}, y={tuple(y.shape)}")
+
+    # ---- Train/val split ----
+    n = X.shape[0]
+    rng = np.random.default_rng(SEED)
+    idx = np.arange(n)
+    rng.shuffle(idx)
+
+    n_val = max(1, int(round(n * VAL_FRAC)))
+    val_idx = idx[:n_val]
+    train_idx = idx[n_val:]
+
+    X_train, y_train = X[train_idx], y[train_idx]
+    X_val, y_val = X[val_idx], y[val_idx]
+
+    print(f"[INFO] Split: train={len(train_idx)}, val={len(val_idx)}")
+
+    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=BATCH_SIZE, shuffle=False)
+
+    cfg = NNConfig(input_dim=5, hidden_dim=32, device="cpu", model_path=None)
+    device = torch.device(cfg.device)
+
+    model = OpinionUpdateNet(input_dim=cfg.input_dim, hidden_dim=cfg.hidden_dim).to(device)
+
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+
+    best_val = float("inf")
+    best_state = None
+
+    print("[INFO] Starting training on participant data...")
+    for epoch in range(1, EPOCHS + 1):
+        model.train()
+        train_loss = 0.0
+
+        for batch_X, batch_y in train_loader:
+            batch_X = batch_X.to(device)
+            batch_y = batch_y.to(device)
+
+            optimizer.zero_grad()
+            pred = model(batch_X)  # expected in (0,1)
+            loss = criterion(pred, batch_y)
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item() * batch_X.size(0)
+
+        train_loss /= len(train_idx)
+
+        # ---- Validation ----
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch_X, batch_y in val_loader:
+                batch_X = batch_X.to(device)
+                batch_y = batch_y.to(device)
+                pred = model(batch_X)
+                loss = criterion(pred, batch_y)
+                val_loss += loss.item() * batch_X.size(0)
+
+        val_loss /= len(val_idx)
+
+        if val_loss < best_val:
+            best_val = val_loss
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+        print(f"Epoch {epoch:02d}/{EPOCHS} - train_MSE={train_loss:.6f} val_MSE={val_loss:.6f}")
+
+    # restore best
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    # ---- Report metrics (train + val) ----
+    model.eval()
+    with torch.no_grad():
+        preds_train = model(X_train.to(device)).cpu().numpy()
+        preds_val = model(X_val.to(device)).cpu().numpy()
+
+    m_train = compute_metrics(y_train.numpy(), preds_train)
+    m_val = compute_metrics(y_val.numpy(), preds_val)
+
+    print("\n=== Metrics (best validation model) ===")
+    print(f"TRAIN: MSE={m_train['MSE']:.4f} RMSE={m_train['RMSE']:.4f} MAE={m_train['MAE']:.4f} R2={m_train['R2']:.4f}")
+    print(f"VAL  : MSE={m_val['MSE']:.4f} RMSE={m_val['RMSE']:.4f} MAE={m_val['MAE']:.4f} R2={m_val['R2']:.4f}")
+
+    # ---- Save model + normalization ----
     MODEL_SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    checkpoint = {
-        "state_dict": model.state_dict(),
-        "X_mean": X_mean,
-        "X_std": X_std,
-    }
+    checkpoint = {"state_dict": model.state_dict(), "X_mean": X_mean, "X_std": X_std}
     torch.save(checkpoint, MODEL_SAVE_PATH)
-    print(f"\nSaved real-data-trained model to: {MODEL_SAVE_PATH.resolve()}")
+    print(f"\n[INFO] Saved model to: {MODEL_SAVE_PATH.resolve()}")
 
 
 if __name__ == "__main__":

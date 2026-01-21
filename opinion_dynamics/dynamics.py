@@ -38,10 +38,9 @@ def update_opinions(
     mu: float = 0.3,
     confidence_bound: float = 0.6,
     repulsion_threshold: float = 0.9,
-    authority_boost: float = 0.2,
     rng: Optional[np.random.Generator] = None,
     nn_model=None,
-    authority_context: bool = False,   # <<< NEW
+    authority_context: bool = False,
 ) -> Tuple[bool, float]:
     if rng is None:
         rng = np.random.default_rng()
@@ -55,6 +54,7 @@ def update_opinions(
     if not neighbors:
         return (False, 0.0)
 
+    # ROUTE A: exposure gate via sharing
     share_i = float(G.nodes[i].get("share_propensity", 1.0))
     if rng.random() > share_i:
         return (False, 0.0)
@@ -64,41 +64,35 @@ def update_opinions(
     oi = float(G.nodes[i]["opinion"])
     oj = float(G.nodes[j]["opinion"])
     diff = abs(oi - oj)
+
+    # bounded confidence
     if diff > confidence_bound:
         return (False, 0.0)
 
+    # traits (optional)
     vig_j = float(G.nodes[j].get("vigilance", 0.0))
 
-    # IMPORTANT:
-    # In the causal design, "authority_context" is the treatment.
-    # Make that the signal (0/1) that the NN sees.
-    auth_flag = float(authority_context)
-
-    if nn_model is not None:
+    # If you are NOT using Route B influence NN:
+    if nn_model is None:
+        mu_eff = float(np.clip(mu * (1.0 - vig_j), 0.0, 1.0))
+    else:
+        # Route B (only if you intentionally enable it)
         import torch
-
+        auth_flag = float(authority_context)
         x = torch.tensor(
             [[oi, oj, vig_j, share_i, auth_flag]],
             dtype=torch.float32,
             device=next(nn_model.parameters()).device
         )
-
         with torch.no_grad():
             nn_out = float(nn_model(x).item())
-
         mu_eff = float(np.clip(mu * nn_out, 0.0, 1.0))
 
-    else:
-        mu_eff = mu * (1.0 - vig_j)
-        if authority_context:
-            mu_eff += authority_boost
-        mu_eff = float(np.clip(mu_eff, 0.0, 1.0))
-
-    if mu_eff <= 0:
+    if mu_eff <= 0.0:
         return (False, 0.0)
 
     new_oj = float(np.clip(oj + mu_eff * (oi - oj), -1.0, 1.0))
     delta = abs(new_oj - oj)
     G.nodes[j]["opinion"] = new_oj
-
     return (True, float(delta))
+

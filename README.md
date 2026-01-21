@@ -56,7 +56,7 @@ Neutral and Authority runs share:
 
 ```json
 {
-  "n_agents": 1000,
+  "n_agents": 200,
   "avg_degree": 8,
   "n_steps": 80000,
   "polarized_start": false,
@@ -81,17 +81,17 @@ Neutral and Authority runs share:
 
 | Condition | Mean | Std | Min | Max |
 |----------|------:|----:|----:|----:|
-| Neutral | 0.303 | 0.073 | 0.113 | 0.552 |
-| Authority | 0.334 | 0.070 | 0.135 | 0.570 |
+| Neutral | 0.306 | 0.039 | 0.205 | 0.379 |
+| Authority | 0.300 | 0.036 | 0.178 | 0.370 |
 
 ---
 
 ## Polarization Outcomes
 
-- Neutral condition (start → end): **0.3397 → 0.2564**
-- Authority condition (start → end): **0.3397 → 0.2446**
+- Neutral condition (start → end): **0.3172 → 0.0481**
+- Authority condition (start → end): **0.3172 → 0.0331**
 
-**End-of-simulation difference (Authority − Neutral): -0.0118**
+**End-of-simulation difference (Authority − Neutral): -0.0150**
 
 ---
 
@@ -122,7 +122,7 @@ A natural next step is multi-seed replication and uncertainty quantification (e.
 
 This README was **automatically generated** from the latest simulation run.
 
-**Timestamp:** 2025-12-26 15:26 UTC
+**Timestamp:** 2026-01-21 21:57 UTC
 
 ---
 

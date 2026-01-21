@@ -17,7 +17,7 @@ from .nn_model import NNConfig, load_or_init_model
 
 @dataclass
 class SimulationParams:
-    n_agents: int = 200
+    n_agents: int = 100
     avg_degree: int = 6
     n_steps: int = 50_000
     polarized_start: bool = False

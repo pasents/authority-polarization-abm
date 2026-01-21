@@ -154,7 +154,7 @@ def main():
     )
 
     base_params = dict(
-        n_agents=1000,
+        n_agents=200,
         avg_degree=8,
         n_steps=80_000,
         polarized_start=False,
