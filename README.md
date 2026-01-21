@@ -3,47 +3,68 @@
 
 ---
 
-## Research Motivation
+## Overview
 
-Experimental evidence from my MSc thesis demonstrates that **authority framing increases individuals’ willingness to share misinformation**. While this is a micro-level behavioral effect, its **macro-level implications for polarization** are not mechanically obvious.
+This project integrates **experimental evidence on authority framing** with an **agent-based model (ABM)** of opinion dynamics to examine whether *micro-level increases in sharing behavior* can translate into *macro-level polarization effects*.
 
-This project evaluates the following question:
-
-> *Can authority framing causally affect polarization outcomes solely by amplifying information diffusion, even when belief susceptibility remains unchanged?*
+The core contribution is **mechanism testing**: isolating *exposure amplification* as a causal channel and evaluating its consequences under standard bounded-confidence dynamics.
 
 ---
 
-## Conceptual Mechanism
+## Empirical Background (Micro-Level)
 
-### Route A: Exposure Amplification
+Experimental results from my MSc thesis show that:
 
-**Authority → Increased Sharing → Higher Exposure → Altered Polarization**
+> **Authority framing significantly increases individuals’ willingness to share false information.**
 
-- Authority framing affects **sharing probability only**
+This effect has been independently re-validated on the cleaned experimental dataset using permutation tests and robust regression. The ABM does **not** re-estimate this effect; instead, it **takes it as given** and embeds it structurally.
+
+---
+
+## Research Question (Macro-Level)
+
+> *Is increased information diffusion—driven solely by authority-induced sharing—sufficient to alter polarization outcomes when belief susceptibility is held constant?*
+
+Crucially, this project also asks **when and why this mechanism may fail**.
+
+---
+
+## Conceptual Design
+
+### Route A: Exposure Amplification (implemented here)
+
+**Authority framing → higher sharing probability → higher exposure frequency**
+
+- Authority affects **whether agents share**
 - Opinion updating rules are **identical across conditions**
-- No authority-based persuasion or influence strength is hard-coded
+- No authority-based persuasion or influence boost is hard-coded
+- Any macro differences arise *only* from exposure frequency
 
-This README reports **Route A**. A separate extension (Route B) would allow authority to modulate **susceptibility / influence strength** directly.
+A separate extension (Route B), not used here, would allow authority to directly modulate influence strength or susceptibility.
 
 ---
 
-## Model Overview
+## Model Description
 
-### Opinion dynamics
+### Opinion Dynamics
 - Agent-based model on a social network
-- Continuous opinions with bounded-confidence updating
-- Homophilic rewiring of network ties
+- Continuous opinions in \([-1, 1]\)
+- Bounded-confidence updating
+- Homophilic network rewiring
 - Polarization measured as cross-sectional opinion variance
 
-### Behavioral integration (empirical)
-- Agent-level **sharing propensity** is predicted by a neural network
-- The network is trained on **real experimental data** from my MSc thesis
+### Behavioral Integration
+- Each agent is assigned a **share propensity**
+- Share propensity is predicted by a neural network trained on **real experimental data**
 - Inputs include authority context and individual traits
-- The neural network **does not** govern opinion updating
+- The neural network **does not** affect opinion updating
 
-### Identification strategy
-Neutral and Authority runs share:
-- the same network initialization
+---
+
+## Identification Strategy
+
+Neutral and Authority simulations share:
+- the same network structure
 - the same initial opinions
 - the same agent traits
 - the same random seed
@@ -112,9 +133,11 @@ The figure below summarizes the mechanism and outcomes (including the polarizati
 
 ## Interpretation (Route A)
 
-Authority framing increases sharing propensity, which increases exposure and interaction frequency. Under bounded-confidence dynamics, this can **accelerate local convergence** rather than necessarily increase fragmentation. Therefore, the sign and magnitude of polarization differences can depend on the regime (parameters, topology, and random seed).
+This simulation demonstrates a boundary result:
 
-A natural next step is multi-seed replication and uncertainty quantification (e.g., confidence intervals for Δ polarization).
+Even when authority framing increases sharing at the individual level, exposure amplification alone may be insufficient to generate polarization under wide confidence bounds and symmetric updating rules.
+
+The macro-level consequences of authority therefore depend on model regime, network structure, and potentially additional mechanisms such as asymmetric trust or authority-biased influence.
 
 ---
 
